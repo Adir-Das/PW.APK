@@ -1,0 +1,6 @@
+{
+  "name": "PW Wallet",
+  "description": "Multi-user personal finance and expense management system with multi-workspace, accounts, budgets, and audit trail in Bengali and BDT.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

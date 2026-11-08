@@ -1,0 +1,331 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isWorkspaceOwner(wsId) {
+      return isSignedIn() && (
+        (exists(/databases/$(database)/documents/workspaces/$(wsId)) &&
+         get(/databases/$(database)/documents/workspaces/$(wsId)).data.ownerId == request.auth.uid) ||
+        (existsAfter(/databases/$(database)/documents/workspaces/$(wsId)) &&
+         getAfter(/databases/$(database)/documents/workspaces/$(wsId)).data.ownerId == request.auth.uid)
+      );
+    }
+
+    function isWorkspaceMember(wsId) {
+      return isSignedIn() && (
+        isWorkspaceOwner(wsId) ||
+        exists(/databases/$(database)/documents/workspaces/$(wsId)/members/$(request.auth.uid)) ||
+        existsAfter(/databases/$(database)/documents/workspaces/$(wsId)/members/$(request.auth.uid))
+      );
+    }
+
+    function canAddTransactions(wsId) {
+      return isWorkspaceOwner(wsId) || (
+        (exists(/databases/$(database)/documents/workspaces/$(wsId)/members/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/workspaces/$(wsId)/members/$(request.auth.uid)).data.role in ['OWNER', 'EDITOR', 'CONTRIBUTOR']) ||
+        (existsAfter(/databases/$(database)/documents/workspaces/$(wsId)/members/$(request.auth.uid)) &&
+         getAfter(/databases/$(database)/documents/workspaces/$(wsId)/members/$(request.auth.uid)).data.role in ['OWNER', 'EDITOR', 'CONTRIBUTOR'])
+      );
+    }
+
+    function canModifyTransactions(wsId) {
+      return isWorkspaceOwner(wsId) || (
+        (exists(/databases/$(database)/documents/workspaces/$(wsId)/members/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/workspaces/$(wsId)/members/$(request.auth.uid)).data.role in ['OWNER', 'EDITOR']) ||
+        (existsAfter(/databases/$(database)/documents/workspaces/$(wsId)/members/$(request.auth.uid)) &&
+         getAfter(/databases/$(database)/documents/workspaces/$(wsId)/members/$(request.auth.uid)).data.role in ['OWNER', 'EDITOR'])
+      );
+    }
+
+    // --- Validation Helpers ---
+
+    function isValidUserProfile(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.displayName is string && data.displayName.size() > 0 && data.displayName.size() <= 100 &&
+             data.email is string && data.email.size() <= 150 &&
+             (!('defaultWorkspaceId' in data) || data.defaultWorkspaceId is string) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
+    }
+
+    function isValidWorkspace(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.ownerId is string && data.ownerId.size() <= 128 &&
+             data.currency is string && data.currency.size() <= 10 &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
+    }
+
+    function isValidWorkspaceMember(data) {
+      return data.workspaceId is string && data.workspaceId.size() <= 128 &&
+             data.userId is string && data.userId.size() <= 128 &&
+             data.role in ['OWNER', 'EDITOR', 'CONTRIBUTOR', 'VIEWER'] &&
+             (!('userEmail' in data) || (data.userEmail is string && data.userEmail.size() <= 150)) &&
+             (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 100)) &&
+             (!('dailySpendingLimit' in data) || data.dailySpendingLimit is number) &&
+             (!('monthlySpendingLimit' in data) || data.monthlySpendingLimit is number) &&
+             (!('maxSingleTxAmount' in data) || data.maxSingleTxAmount is number) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
+    }
+
+    function isValidAccount(data) {
+      return data.workspaceId is string && data.workspaceId.size() <= 128 &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.type in ['BANK', 'MOBILE_WALLET', 'CASH', 'SAVINGS', 'OTHER'] &&
+             (!('providerName' in data) || (data.providerName is string && data.providerName.size() <= 100)) &&
+             (!('accountNumberMasked' in data) || (data.accountNumberMasked is string && data.accountNumberMasked.size() <= 50)) &&
+             data.openingBalance is number &&
+             data.currentBalance is number &&
+             (!('color' in data) || (data.color is string && data.color.size() <= 30)) &&
+             (!('icon' in data) || (data.icon is string && data.icon.size() <= 50)) &&
+             data.status in ['ACTIVE', 'ARCHIVED'] &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
+    }
+
+    function isValidTransaction(data) {
+      return data.workspaceId is string && data.workspaceId.size() <= 128 &&
+             data.type in ['INCOME', 'EXPENSE', 'TRANSFER', 'ADJUSTMENT'] &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 150 &&
+             data.amount is number && data.amount > 0 &&
+             data.accountId is string && data.accountId.size() <= 128 &&
+             (!('accountName' in data) || (data.accountName is string && data.accountName.size() <= 100)) &&
+             (!('toAccountId' in data) || (data.toAccountId is string && data.toAccountId.size() <= 128)) &&
+             (!('toAccountName' in data) || (data.toAccountName is string && data.toAccountName.size() <= 100)) &&
+             (!('categoryId' in data) || (data.categoryId is string && data.categoryId.size() <= 128)) &&
+             (!('categoryName' in data) || (data.categoryName is string && data.categoryName.size() <= 100)) &&
+             data.date is string && data.date.size() <= 30 &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
+             (!('receiptUrl' in data) || (data.receiptUrl is string && data.receiptUrl.size() <= 500)) &&
+             data.createdBy is string && data.createdBy.size() <= 128 &&
+             (!('creatorName' in data) || (data.creatorName is string && data.creatorName.size() <= 100)) &&
+             (!('isReversed' in data) || data.isReversed is bool) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
+    }
+
+    function isValidCategory(data) {
+      return data.workspaceId is string && data.workspaceId.size() <= 128 &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             (!('nameBn' in data) || (data.nameBn is string && data.nameBn.size() <= 100)) &&
+             data.type in ['INCOME', 'EXPENSE'] &&
+             (!('icon' in data) || (data.icon is string && data.icon.size() <= 50)) &&
+             (!('color' in data) || (data.color is string && data.color.size() <= 30)) &&
+             (!('isDefault' in data) || data.isDefault is bool) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
+    }
+
+    function isValidBudget(data) {
+      return data.workspaceId is string && data.workspaceId.size() <= 128 &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.amount is number && data.amount > 0 &&
+             (!('spentAmount' in data) || data.spentAmount is number) &&
+             data.period in ['MONTHLY', 'WEEKLY', 'YEARLY'] &&
+             (!('categoryId' in data) || (data.categoryId is string && data.categoryId.size() <= 128)) &&
+             (!('categoryName' in data) || (data.categoryName is string && data.categoryName.size() <= 100)) &&
+             (!('month' in data) || data.month is int) &&
+             (!('year' in data) || data.year is int) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
+    }
+
+    function isValidSavingsGoal(data) {
+      return data.workspaceId is string && data.workspaceId.size() <= 128 &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 150 &&
+             data.targetAmount is number && data.targetAmount > 0 &&
+             data.savedAmount is number &&
+             (!('targetDate' in data) || (data.targetDate is string && data.targetDate.size() <= 30)) &&
+             data.status in ['ACTIVE', 'COMPLETED'] &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
+    }
+
+    function isValidDebt(data) {
+      return data.workspaceId is string && data.workspaceId.size() <= 128 &&
+             data.personName is string && data.personName.size() > 0 && data.personName.size() <= 100 &&
+             data.type in ['RECEIVABLE', 'PAYABLE'] &&
+             data.amount is number && data.amount > 0 &&
+             data.paidAmount is number &&
+             (!('dueDate' in data) || (data.dueDate is string && data.dueDate.size() <= 30)) &&
+             data.status in ['PENDING', 'PARTIAL', 'COMPLETED'] &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
+    }
+
+    function isValidRecurring(data) {
+      return data.workspaceId is string && data.workspaceId.size() <= 128 &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 150 &&
+             data.amount is number && data.amount > 0 &&
+             data.type in ['INCOME', 'EXPENSE'] &&
+             data.frequency in ['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'] &&
+             data.accountId is string && data.accountId.size() <= 128 &&
+             (!('categoryId' in data) || (data.categoryId is string && data.categoryId.size() <= 128)) &&
+             (!('nextExecutionDate' in data) || (data.nextExecutionDate is string && data.nextExecutionDate.size() <= 30)) &&
+             data.isActive is bool &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
+    }
+
+    function isValidAuditLog(data) {
+      return data.workspaceId is string && data.workspaceId.size() <= 128 &&
+             data.userId is string && data.userId == request.auth.uid &&
+             data.actionType is string && data.actionType.size() <= 50 &&
+             data.entityType is string && data.entityType.size() <= 50 &&
+             (!('userName' in data) || (data.userName is string && data.userName.size() <= 100)) &&
+             (!('entityId' in data) || (data.entityId is string && data.entityId.size() <= 128)) &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
+             (!('details' in data) || (data.details is string && data.details.size() <= 1000)) &&
+             data.timestamp is timestamp && data.timestamp <= request.time;
+    }
+
+    // --- User Profiles ---
+    match /users/{userId} {
+      allow get: if isSignedIn() && (request.auth.uid == userId || isValidId(userId));
+      allow list: if isSignedIn() && request.auth.uid == userId;
+      allow create: if isSignedIn() && request.auth.uid == userId && isValidUserProfile(incoming());
+      allow update: if isSignedIn() && request.auth.uid == userId &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       isValidUserProfile(incoming());
+      allow delete: if false;
+    }
+
+    // --- Workspaces ---
+    match /workspaces/{workspaceId} {
+      allow get: if isWorkspaceMember(workspaceId);
+      allow list: if isSignedIn(); // client filters by owner or membership
+      allow create: if isSignedIn() && incoming().ownerId == request.auth.uid && isValidWorkspace(incoming());
+      allow update: if isWorkspaceOwner(workspaceId) &&
+                       incoming().ownerId == existing().ownerId &&
+                       incoming().createdAt == existing().createdAt &&
+                       isValidWorkspace(incoming());
+      allow delete: if isWorkspaceOwner(workspaceId);
+
+      // --- Workspace Members ---
+      match /members/{memberId} {
+        allow get, list: if isWorkspaceMember(workspaceId);
+        allow create: if (isWorkspaceOwner(workspaceId) || (isSignedIn() && incoming().userId == request.auth.uid)) &&
+                         incoming().workspaceId == workspaceId &&
+                         isValidWorkspaceMember(incoming());
+        allow update: if isWorkspaceOwner(workspaceId) &&
+                         incoming().workspaceId == existing().workspaceId &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidWorkspaceMember(incoming());
+        allow delete: if isWorkspaceOwner(workspaceId) || (isSignedIn() && resource.data.userId == request.auth.uid);
+      }
+
+      // --- Accounts ---
+      match /accounts/{accountId} {
+        allow get, list: if isWorkspaceMember(workspaceId);
+        allow create: if isWorkspaceOwner(workspaceId) &&
+                         incoming().workspaceId == workspaceId &&
+                         isValidAccount(incoming());
+        allow update: if (isWorkspaceOwner(workspaceId) || canModifyTransactions(workspaceId)) &&
+                         incoming().workspaceId == existing().workspaceId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidAccount(incoming());
+        allow delete: if isWorkspaceOwner(workspaceId);
+      }
+
+      // --- Transactions ---
+      match /transactions/{transactionId} {
+        allow get, list: if isWorkspaceMember(workspaceId);
+        allow create: if canAddTransactions(workspaceId) &&
+                         incoming().workspaceId == workspaceId &&
+                         incoming().createdBy == request.auth.uid &&
+                         isValidTransaction(incoming());
+        allow update: if canModifyTransactions(workspaceId) &&
+                         incoming().workspaceId == existing().workspaceId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidTransaction(incoming());
+        allow delete: if canModifyTransactions(workspaceId);
+      }
+
+      // --- Categories ---
+      match /categories/{categoryId} {
+        allow get, list: if isWorkspaceMember(workspaceId);
+        allow create: if isWorkspaceMember(workspaceId) &&
+                         incoming().workspaceId == workspaceId &&
+                         isValidCategory(incoming());
+        allow update: if isWorkspaceMember(workspaceId) &&
+                         incoming().workspaceId == existing().workspaceId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidCategory(incoming());
+        allow delete: if isWorkspaceOwner(workspaceId);
+      }
+
+      // --- Budgets ---
+      match /budgets/{budgetId} {
+        allow get, list: if isWorkspaceMember(workspaceId);
+        allow create, update: if isWorkspaceMember(workspaceId) &&
+                                 incoming().workspaceId == workspaceId &&
+                                 isValidBudget(incoming());
+        allow delete: if isWorkspaceOwner(workspaceId);
+      }
+
+      // --- Savings Goals ---
+      match /savingsGoals/{goalId} {
+        allow get, list: if isWorkspaceMember(workspaceId);
+        allow create, update: if isWorkspaceMember(workspaceId) &&
+                                 incoming().workspaceId == workspaceId &&
+                                 isValidSavingsGoal(incoming());
+        allow delete: if isWorkspaceOwner(workspaceId);
+      }
+
+      // --- Loans & Debts ---
+      match /debts/{debtId} {
+        allow get, list: if isWorkspaceMember(workspaceId);
+        allow create, update: if isWorkspaceMember(workspaceId) &&
+                                 incoming().workspaceId == workspaceId &&
+                                 isValidDebt(incoming());
+        allow delete: if isWorkspaceOwner(workspaceId);
+      }
+
+      // --- Recurring Transactions ---
+      match /recurring/{recurringId} {
+        allow get, list: if isWorkspaceMember(workspaceId);
+        allow create, update: if isWorkspaceMember(workspaceId) &&
+                                 incoming().workspaceId == workspaceId &&
+                                 isValidRecurring(incoming());
+        allow delete: if isWorkspaceOwner(workspaceId);
+      }
+
+      // --- Audit Logs (Immutable) ---
+      match /auditLogs/{logId} {
+        allow get, list: if isWorkspaceMember(workspaceId);
+        allow create: if isWorkspaceMember(workspaceId) &&
+                         incoming().workspaceId == workspaceId &&
+                         incoming().userId == request.auth.uid &&
+                         isValidAuditLog(incoming());
+        allow update, delete: if false; // Immutable audit log
+      }
+    }
+  }
+}
